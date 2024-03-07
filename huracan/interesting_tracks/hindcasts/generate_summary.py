@@ -11,10 +11,12 @@ from storm_assess import track, regions
 from huracan.interesting_tracks.hindcasts import fname_pattern
 
 
-def main(model_year):
+def main():
     path = pathlib.Path(".")
 
+    # Summary details of each storm found matching initial sift
     summary = pd.DataFrame(data=dict(
+        model_year=[],
         forecast_start=[],
         storm_start=[],
         storm_end=[],
@@ -24,7 +26,7 @@ def main(model_year):
         end_lon=[],
         max_intensity_europe=[],
     ))
-    files = sorted(list(path.glob(f"*/HIND_VOR_VERTAVG_{model_year}*_*_*.nc")))
+    files = sorted(list(path.glob(f"*/HIND_VOR_VERTAVG_20*_*_*.nc")))
     for filepath in tqdm(files):
         details = parse(fname_pattern, filepath.name)
 
@@ -53,6 +55,7 @@ def main(model_year):
                 max_intensity_tropics = np.nan
 
             summary = pd.concat([summary, pd.DataFrame([dict(
+                model_year=details["model_year"],
                 forecast_start=start_time,
                 ensemble_member=details["ensemble_member"],
                 storm_start=time[0],
@@ -67,8 +70,8 @@ def main(model_year):
                 max_intensity_europe=max_intensity_europe,
             )])], ignore_index=True)
 
-    summary.sort_values(by="forecast_start").to_csv("HIND_VOR_VERTAVG_{model_year}_summary.csv")
+    summary.sort_values(by="forecast_start").to_csv("HIND_VOR_VERTAVG_summary.csv")
 
 
 if __name__ == '__main__':
-    main(2023)
+    main()
