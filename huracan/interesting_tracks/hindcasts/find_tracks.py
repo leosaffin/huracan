@@ -3,7 +3,7 @@ import datetime
 
 import numpy as np
 import pandas as pd
-from scipy.ndimage.filters import uniform_filter1d
+from scipy.ndimage import uniform_filter1d
 from iris.analysis.cartography import wrap_lons
 from tqdm import tqdm
 
@@ -15,7 +15,7 @@ from jasmin_tracks import datasets
 def add_category(storm, filter_size=None):
     storm["category"] = ("time", np.zeros(len(storm.time), dtype="<U3"))
 
-    b = storm.B
+    b = np.abs(storm.B)
     vtu = storm.TU
     vtl = storm.TL
 
@@ -71,7 +71,7 @@ def find_tracks():
                 tr_ = tr.sel(time=times_)
 
                 # Only storms that are tropical cyclones at some point in their lifecycle
-                add_category(tr_, filter=3)
+                add_category(tr_, filter_size=3)
                 category_consecutive = [(k, sum(1 for i in g)) for k, g in groupby(tr_.category.data)]
                 tcident = False
                 for category, count in category_consecutive:
