@@ -1,5 +1,7 @@
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.stats import linregress
+from scipy.ndimage import uniform_filter1d
 import iris
 from iris.analysis import MEAN, MAX, MIN
 from iris.analysis.cartography import wrap_lons, get_xy_grids
@@ -148,3 +150,43 @@ def split_cyclone_data(
         right_thetas.append(right_theta)
 
     return left_thetas.merge_cube(), right_thetas.merge_cube()
+
+
+def is_tropical_cyclone(
+        b: ArrayLike,
+        vtl: ArrayLike,
+        vtu: ArrayLike,
+        filter_size: int = None,
+) -> ArrayLike:
+    """Identify where a track is a tropical cyclone by the cyclone phase space
+    definition (warm core and symmetric)
+
+    Parameters
+    ----------
+    b
+        Cyclone phase space asymmetry
+    vtl
+        Cyclone phase space low-level warm core
+    vtu
+        Cyclone phase space upper-level warm core
+    filter_size
+        Length (in timesteps) of the uniform filter to apply to the cyclone phase space
+        parameters. If None, don't apply filter
+
+    Returns
+    -------
+    True where the CPS criteria for a tropical cyclone is achieved, False otherwise
+
+    """
+    b = np.abs(b)
+
+    if filter_size is not None:
+        vtu = uniform_filter1d(vtu, size=filter_size, mode="nearest")
+        vtl = uniform_filter1d(vtl, size=filter_size, mode="nearest")
+        b = uniform_filter1d(b, size=filter_size, mode="nearest")
+
+    # Using North Atlantic definitions from table 1 in
+    # https://www.sciencedirect.com/science/article/pii/S2225603223000516
+    is_tc = (b <= 10) & (vtl > 0) & (vtu > 0)
+
+    return is_tc
