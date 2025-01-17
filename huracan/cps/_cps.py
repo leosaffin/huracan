@@ -153,13 +153,20 @@ def split_cyclone_data(
 
 
 def is_tropical_cyclone(
-        b: ArrayLike,
-        vtl: ArrayLike,
-        vtu: ArrayLike,
-        filter_size: int = None,
+        b: [ArrayLike, None],
+        vtl: [ArrayLike, None],
+        vtu: [ArrayLike, None],
+        *,
+        filter_size: [int, None] = None,
+        b_threshold: [float, None] = 10,
+        vtl_threshold: [float, None] = 0,
+        vtu_threshold: [float, None] = 0,
 ) -> ArrayLike:
     """Identify where a track is a tropical cyclone by the cyclone phase space
     definition (warm core and symmetric)
+
+    Default thresholds are using North Atlantic definitions from table 1 in
+    https://www.sciencedirect.com/science/article/pii/S2225603223000516
 
     Parameters
     ----------
@@ -173,20 +180,47 @@ def is_tropical_cyclone(
         Length (in timesteps) of the uniform filter to apply to the cyclone phase space
         parameters. If None, don't apply filter
 
+    b_threshold
+        The threshold of the asymmetry parameter, below which is considered to be a
+        tropical cyclone
+
+    vtl_threshold
+        The threshold of the low-level warm-core parameter, above which is considered
+        to be a tropical cyclone
+
+    vtu_threshold
+        The threshold of the upper-level warm-core parameter, above which is considered
+        to be a tropical cyclone
+
     Returns
     -------
     True where the CPS criteria for a tropical cyclone is achieved, False otherwise
 
     """
-    b = np.abs(b)
+    if (b is None and vtl is None and vtu is None) or (b_threshold is None and vtl_threshold is None and vtu_threshold is None):
+        raise ValueError("Need to pass at least one variable and threshold")
 
     if filter_size is not None:
-        vtu = uniform_filter1d(vtu, size=filter_size, mode="nearest")
-        vtl = uniform_filter1d(vtl, size=filter_size, mode="nearest")
-        b = uniform_filter1d(b, size=filter_size, mode="nearest")
+        if b_threshold is not None and b is not None:
+            b = uniform_filter1d(b, size=filter_size, mode="nearest")
+        if vtl_threshold is not None and vtl is not None:
+            vtl = uniform_filter1d(vtl, size=filter_size, mode="nearest")
+        if vtu_threshold is not None and vtu is not None:
+            vtu = uniform_filter1d(vtu, size=filter_size, mode="nearest")
 
-    # Using North Atlantic definitions from table 1 in
-    # https://www.sciencedirect.com/science/article/pii/S2225603223000516
-    is_tc = (b <= 10) & (vtl > 0) & (vtu > 0)
+    condition = []
+    if b_threshold is not None and b is not None:
+        condition.append(b <= b_threshold)
+    if vtl_threshold is not None and vtl is not None:
+        condition.append(vtl > vtl_threshold)
+    if vtu_threshold is not None and vtu is not None:
+        condition.append(vtu > vtu_threshold)
+
+    if len(condition) == 1:
+        return condition[0]
+    else:
+        is_tc = condition[0]
+        for other_condition in condition[1:]:
+            is_tc = is_tc & other_condition
 
     return is_tc
