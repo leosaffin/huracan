@@ -41,7 +41,7 @@ def main(dataset_name, basin):
         [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
         if result is not None
     ]
-    tidy_track_metadata(tracks, plevs)
+    tracks = tidy_track_metadata(tracks, plevs)
 
     huracanpy.save(tracks, f"{dataset_name}_tracks_NATL.nc")
 
@@ -97,6 +97,8 @@ def tidy_track_metadata(tracks, plevs):
     tracks["relative_vorticity"] = (["record", "pressure"], vorticity)
     tracks["relative_vorticity_lon"] = (["record", "pressure"], vorticity_lon)
     tracks["relative_vorticity_lat"] = (["record", "pressure"], vorticity_lat)
+
+    return tracks
 
 
 if __name__ == '__main__':
