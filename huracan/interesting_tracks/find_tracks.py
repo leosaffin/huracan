@@ -37,7 +37,7 @@ def main(dataset_name, basin):
     )
 
     plevs = [
-        result.named["n"] for result in
+        float(result.named["n"]) for result in
         [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
         if result is not None
     ]
@@ -66,7 +66,8 @@ def filter_by_basin(files, basin, **kwargs):
         tracks = tracks.sortby("track_id")
         track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
         tracks["track_id_original"] = ("record", tracks.track_id.values)
-        tracks.track_id[:] = new_track_ids + current_track_id
+        tracks["track_id"] = ("record", new_track_ids + current_track_id)
+        tracks["track_id"].attrs["cf_role"] = "trajectory_id"
 
         current_track_id = tracks.track_id.values.max() + 1
 

@@ -154,7 +154,7 @@ def main(**kwargs):
 
     else:
         plevs = [
-            result.named["n"] for result in
+            float(result.named["n"]) for result in
             [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
             if result is not None
         ]
