@@ -1,123 +1,170 @@
-from itertools import groupby
-import datetime
+"""
 
+Usage:
+    find_tracks.py [--model_year=<model_year>] [--year=<year>] [--month=<month>] [--day=<day>]
+    find_tracks.py  (-h | --help)
+
+Arguments:
+    --model_year=<model_year>
+    --year=<year>
+    --month=<month>
+    --day=<day>
+
+Options:
+    -h --help        Show help
+
+"""
+
+import datetime
+from itertools import groupby
+
+from parse import parse
 import numpy as np
-import pandas as pd
 from scipy.ndimage import uniform_filter1d
-from iris.analysis.cartography import wrap_lons
+import xarray as xr
 from tqdm import tqdm
 
 import huracanpy
 from jasmin_tracks import datasets
+from twinotter.util.scripting import parse_docopt_arguments
+
+from huracan.cps import is_tropical_cyclone
+from huracan.interesting_tracks.find_tracks import tidy_track_metadata
+
+_YYYYMMDDHH = "{year:04d}{month:02d}{day:02d}{hour:02d}"
+_YYYYMMDDHH_model = _YYYYMMDDHH.replace("year", "model_year").replace(
+    "day", "model_day"
+)
+
+leap_year_extra_path = (
+    f"{_YYYYMMDDHH_model}/{_YYYYMMDDHH}/"
+    f"HIND_VOR_VERTAVG_{_YYYYMMDDHH_model}_{_YYYYMMDDHH}" + "_{ensemble_member}/"
+)
 
 
-def add_category(storm, filter_size=None):
-    storm["category"] = ("obs", np.zeros(len(storm.time), dtype="<U3"))
+def main(**kwargs):
+    keys = kwargs.keys()
+    for key in keys:
+        kwargs[key] = int(kwargs[key])
 
-    b = np.abs(storm.B)
-    vtu = storm.TU
-    vtl = storm.TL
-
-    if filter_size is not None:
-        vtu = uniform_filter1d(vtu, size=filter_size)
-        vtl = uniform_filter1d(vtl, size=filter_size)
-        b = uniform_filter1d(b, size=filter_size)
-    # Using North Atlantic definitions from table 1 in
-    # https://www.sciencedirect.com/science/article/pii/S2225603223000516
-    TC = (b <= 10) & (vtl > 0) & (vtu > 0)
-    ET1 = ((b > 10) & (vtl > 0))
-    ET2 = ((b <= 10) & (vtl <= 0))
-    EC = (b > 10) & (vtl <= 0)
-
-    storm.category[np.where(TC)] = "TC"
-    storm.category[np.where(ET1)] = "ET1"
-    storm.category[np.where(ET2)] = "ET2"
-    storm.category[np.where(EC)] = "EC"
-
-    # Set weak vortices as no category. Threshold from Hodges et al. (2017)
-    storm.category[np.where(storm.vorticity850hPa < 6)] = "NC"
-
-
-def find_tracks():
     dataset = datasets["ECMWF_hindcasts"]
-    all_files = list(dataset.find_files(model_year=2015))
-    summary = pd.DataFrame(data=dict(
-        model_year=[],
-        forecast_start=[],
-        ensemble_member=[],
-        storm_id=[],
-        storm_start=[],
-        storm_end=[],
-        origin_lat=[],
-        origin_lon=[],
-        end_lat=[],
-        end_lon=[],
-        max_intensity_europe=[],
-    ))
+    all_files = list(dataset.find_files(**kwargs))
+    all_files = [
+        f for f in all_files
+        if "HIND_VOR_VERTAVG_2016060900_2011060900_10" not in str(f)
+        and ".old" not in str(f)
+    ]
 
+    all_tracks = None
+    current_track_id = 1
     for fname in tqdm(all_files):
-        tracks = huracanpy.load(str(fname), tracker="TRACK", variable_names=dataset.variable_names)
-        details = dataset.file_details(str(fname))
+        tracks = huracanpy.load(
+            str(fname), source="TRACK", variable_names=dataset.variable_names
+        )
+        tracks.hrcn.add_is_ocean()
+        tracks.hrcn.add_basin()
+
+        # Fix for leap years
+        if "022900_" in str(fname):
+            details = parse(
+                str(dataset.fixed_path / leap_year_extra_path / dataset.filename),
+                str(fname),
+            ).named
+        else:
+            details = dataset.file_details(str(fname))
+
         start_time = datetime.datetime(
             **{key: details[key] for key in ["year", "month", "day", "hour"]}
         )
-        for n, tr in tracks.groupby("track_id"):
-            # Only North Atlantic storms
-            basin = huracanpy.utils.geography.get_basin(tr.lon, tr.lat)
-            if (basin == "NATL").any():
-                # Only data every 12 hours for CPS in hindcasts
-                times = pd.to_datetime(tr.time)
-                times_ = [t for t in tr.time.data if pd.to_datetime(t).hour % 12 == 0]
-                tr_ = tr.where(tr.time.isin(times_), drop=True)
-                basin = huracanpy.utils.geography.get_basin(tr_.lon, tr_.lat)
 
-                # Only storms that are tropical cyclones at some point in their lifecycle
-                add_category(tr_, filter_size=3)
-                # Only include the categories in the North Atlantic basin
-                tr_["category"][basin != "NATL"] = "NC"
+        # Filter tracks
+        condition = tracks.is_ocean & (tracks.basin == "NATL")
+        track_ids = np.unique(tracks.isel(record=np.where(condition)[0]).track_id)
+        condition = np.isin(tracks.track_id, track_ids)
+        tracks = tracks.isel(record=np.where(condition)[0])
 
-                category_consecutive = [(k, sum(1 for i in g)) for k, g in groupby(tr_.category.data)]
-                tcident = False
-                for category, count in category_consecutive:
-                    if category == "TC" and count > 1:
-                        tcident = True
-                if tcident:
-                    in_tropics = tr.lat < 30
-                    if in_tropics.any():
-                        min_pressure_tropics = tr.mslp[in_tropics].data.min()
-                        max_intensity_tropics = tr.vmax10m[in_tropics].data.max()
-                    else:
-                        min_pressure_tropics = np.nan
-                        max_intensity_tropics = np.nan
+        track_ids = []
+        tracks_12hr = tracks.isel(record=np.where(tracks.time.dt.hour % 12 == 0)[0])
+        for track_id, track in tracks_12hr.groupby("track_id"):
+            # Only storms that are tropical cyclones at some point in their lifecycle
+            vort_smoothed = uniform_filter1d(
+                track.vorticity850hPa, size=3, mode="nearest"
+            )
 
-                    # 36–70 deg N and 10 deg W–30 deg E
-                    lons = wrap_lons(tr.lon, -180, 360)
-                    in_europe = (-10 < lons) & (lons < 30) & (36 < tr.lat) & (tr.lat < 70)
-                    if in_europe.any():
-                        min_pressure_europe = tr.mslp[in_europe].data.min()
-                        max_intensity_europe = tr.vmax10m[in_europe].data.max()
-                    else:
-                        min_pressure_europe = np.nan
-                        max_intensity_europe = np.nan
-                    summary = pd.concat([summary, pd.DataFrame([dict(
-                        model_year=details["model_year"],
-                        forecast_start=start_time,
-                        ensemble_member=details["ensemble_member"],
-                        storm_start=times[0],
-                        storm_end=times[-1],
-                        origin_lat=tr.lat.data[0],
-                        origin_lon=tr.lon.data[0],
-                        end_lat=tr.lat.data[-1],
-                        end_lon=tr.lon.data[-1],
-                        min_pressure_tropics=min_pressure_tropics,
-                        max_intensity_tropics=max_intensity_tropics,
-                        min_pressure_europe=min_pressure_europe,
-                        max_intensity_europe=max_intensity_europe,
-                    )])], ignore_index=True)
+            condition = (
+                is_tropical_cyclone(
+                    np.abs(track.cps_b),
+                    track.cps_vtl,
+                    None,
+                    filter_size=3,
+                    b_threshold=15
+                )
+                & track.is_ocean
+                & (track.basin == "NATL")
+                & (np.gradient(vort_smoothed) > 0)
+            )
 
-    summary.to_csv("interesting_tracks_ECMWF_Hindcasts_2015_test.csv")
+            category_consecutive = [
+                (k, sum(1 for i in g)) for k, g in groupby(condition.values)
+            ]
+
+            is_tc = False
+            for category, count in category_consecutive:
+                # Discount is_tc if less than 4 timesteps
+                if category and count > 3:
+                    is_tc = True
+
+            if is_tc:
+                track_ids.append(track_id)
+
+        if len(track_ids) > 0:
+            tracks = tracks.isel(record=np.where(np.isin(tracks.track_id, track_ids))[0])
+
+            # Reindex track_ids
+            tracks = tracks.sortby("track_id")
+            track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
+            tracks["track_id_original"] = tracks.track_id
+            del tracks.track_id_original.attrs["cf_role"]
+            tracks["track_id"] = ("record", new_track_ids + current_track_id)
+            tracks.track_id.attrs["cf_role"] = "trajectory_id"
+
+            current_track_id = tracks.track_id.values.max() + 1
+
+            # Add details to subset of tracks and save
+            if details["ensemble_member"] == "CNTRL":
+                details["ensemble_member"] = "0"
+
+            tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
+            tracks["model_year"] = (
+                "record",
+                [int(details["model_year"])] * len(tracks.record),
+            )
+            tracks["ensemble_member"] = (
+                "record",
+                [int(details["ensemble_member"])] * len(tracks.record),
+            )
+
+            if all_tracks is None:
+                all_tracks = tracks
+            else:
+                all_tracks = xr.concat([all_tracks, tracks], dim="record")
+
+    if all_tracks is None:
+        print("No interesting tracks found")
+
+    else:
+        plevs = [
+            result.named["n"] for result in
+            [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
+            if result is not None
+        ]
+        tracks = tidy_track_metadata(all_tracks, plevs)
+
+        huracanpy.save(
+            tracks,
+            f"hindcast_tracks_NATL_TC_{kwargs['model_year']}_{kwargs['month']}.nc",
+        )
 
 
-if __name__ == '__main__':
-    find_tracks()
-
+if __name__ == "__main__":
+    parse_docopt_arguments(main, __doc__)
