@@ -65,7 +65,8 @@ def filter_by_basin(files, basin, **kwargs):
         # Reindex track_ids
         tracks = tracks.sortby("track_id")
         track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
-        tracks = tracks.assign(track_id=("record", new_track_ids + current_track_id))
+        tracks["track_id_original"] = ("record", tracks.track_id.values)
+        tracks.track_id[:] = new_track_ids + current_track_id
 
         current_track_id = tracks.track_id.values.max() + 1
 
