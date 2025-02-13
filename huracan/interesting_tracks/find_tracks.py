@@ -43,7 +43,7 @@ def main(dataset_name, basin):
     ]
     tracks = tidy_track_metadata(tracks, plevs)
 
-    huracanpy.save(tracks, f"{dataset_name}_tracks_NATL.nc")
+    huracanpy.save(tracks, f"{dataset_name}_tracks_{basin}.nc")
 
 
 def filter_by_basin(files, basin, **kwargs):
