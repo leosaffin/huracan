@@ -21,15 +21,22 @@ import pandas as pd
 from scipy.ndimage import uniform_filter1d
 from tqdm import tqdm
 from twinotter.util.scripting import parse_docopt_arguments
+import xarray as xr
 
 import huracanpy
 
 from huracan.cps import is_tropical_cyclone
 
 
-def main(filename, basin):
+def main(filename, basin, filter_size=5):
     summary = []
     tracks = huracanpy.load(filename)
+    tracks = huracanpy.trackswhere(
+        tracks,
+        tracks.track_id,
+        lambda x: x.basin[x.vorticity.argmax()] == basin,
+    )
+    tc_tracks = []
 
     for track_id, track in tqdm(tracks.groupby("track_id")):
         is_wc_sym = False
@@ -41,7 +48,11 @@ def main(filename, basin):
 
         # Only storms that are tropical cyclones at some point in their lifecycle
         tc = is_tropical_cyclone(
-            np.abs(track.cps_b), track.cps_vtl, None, filter_size=4, b_threshold=15
+            np.abs(track.cps_b),
+            track.cps_vtl,
+            None,
+            filter_size=filter_size,
+            b_threshold=15,
         )
         tc = (tc & (track.basin == basin) & track.is_ocean)
 
@@ -54,17 +65,27 @@ def main(filename, basin):
                 is_wc_sym = True
 
         if is_wc_sym:
-            vort_smoothed = uniform_filter1d(vorticity, size=4, mode="nearest")
+            vort_smoothed = uniform_filter1d(
+                vorticity, size=filter_size, mode="nearest"
+            )
             result = np.gradient(vort_smoothed)
 
             tc = tc & (result > 0)
+            track["is_tc"] = tc
 
             category_consecutive = [
                 (k, sum(1 for i in g)) for k, g in groupby(tc.values)
             ]
+            idx = 0
             for category, count in category_consecutive:
-                if category and count >= 4:
-                    is_tc = True
+                if category and count < 4:
+                    track.is_tc[idx:idx + count] = False
+                idx += count
+
+            is_tc = track.is_tc.values.any()
+
+            if is_tc:
+                tc_tracks.append(track)
 
         times = pd.to_datetime(track.time)
         summary.append(pd.DataFrame([dict(
@@ -83,8 +104,7 @@ def main(filename, basin):
     summary = pd.concat(summary, ignore_index=True)
     summary.to_parquet(filename.replace(".nc", ".parquet"))
 
-    track_ids = summary[summary.is_tc == 1.0]
-    tracks = tracks.isel(record=np.where(np.isin(tracks.track_id, track_ids))[0])
+    tracks = xr.concat(tc_tracks, dim="record")
     huracanpy.save(tracks, filename.replace(".nc", "_TCs.nc"))
 
     track_ids = summary[summary.hits_europe == 1.0]
