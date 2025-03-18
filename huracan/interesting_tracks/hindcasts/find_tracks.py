@@ -1,10 +1,11 @@
 """
 
 Usage:
-    find_tracks.py [--model_year=<model_year>] [--year=<year>] [--month=<month>] [--day=<day>]
+    find_tracks.py [--basin=<str>] [--model_year=<model_year>] [--year=<year>] [--month=<month>] [--day=<day>]
     find_tracks.py  (-h | --help)
 
 Arguments:
+    --basin=<str> [default: NATL]
     --model_year=<model_year>
     --year=<year>
     --month=<month>
@@ -40,7 +41,7 @@ leap_year_extra_path = (
 )
 
 
-def main(**kwargs):
+def main(basin="NATL", **kwargs):
     keys = kwargs.keys()
     for key in keys:
         kwargs[key] = int(kwargs[key])
@@ -101,7 +102,19 @@ def main(**kwargs):
 
     all_tracks = xr.concat(all_tracks, dim="record")
     tracks_12hr = all_tracks.isel(record=np.where(tracks.time.dt.hour % 12 == 0)[0])
-    tracks_tc, summary = apply_filters(tracks_12hr)
+    tracks_tc, summary = apply_filters(
+        tracks_12hr,
+        npoints=3,
+        basin=basin,
+        b_threshold=15,
+        vtl_threshold=0,
+        vtu_threshold=0,
+        vort_threshold=6,
+        intensification_threshold=0,
+        coherent=True,
+        ocean=False,
+        filter_size=3,
+    )
 
     if len(tracks_tc) == 0:
         print("No interesting tracks found")
@@ -116,7 +129,7 @@ def main(**kwargs):
 
         huracanpy.save(
             tracks,
-            f"hindcast_tracks_NATL_TC_{kwargs['model_year']}_{kwargs['month']}.nc",
+            f"hindcast_tracks_{basin}_TC_{kwargs['model_year']}_{kwargs['month']}.nc",
         )
 
 
