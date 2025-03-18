@@ -71,8 +71,39 @@ def main(
     ocean=False,
     filter_size=5,
 ):
-    summary = []
     tracks = huracanpy.load(filename_in)
+    tc_tracks, summary = apply_filters(
+        tracks,
+        npoints=npoints,
+        basin=basin,
+        b_threshold=b_threshold,
+        vtl_threshold=vtl_threshold,
+        vtu_threshold=vtu_threshold,
+        vort_threshold=vort_threshold,
+        intensification_threshold=intensification_threshold,
+        coherent=coherent,
+        ocean=ocean,
+        filter_size=filter_size,
+    )
+
+    summary.to_parquet(filename_out + ".parquet")
+    huracanpy.save(tc_tracks, filename_out + ".nc")
+
+
+def apply_filters(
+    tracks,
+    npoints=4,
+    basin=None,
+    b_threshold=None,
+    vtl_threshold=None,
+    vtu_threshold=None,
+    vort_threshold=None,
+    intensification_threshold=None,
+    coherent=False,
+    ocean=False,
+    filter_size=5,
+):
+    summary = []
     tc_tracks = []
 
     for track_id, track in tqdm(tracks.groupby("track_id")):
@@ -159,10 +190,9 @@ def main(
         )]))
 
     summary = pd.concat(summary, ignore_index=True)
-    summary.to_parquet(filename_out + ".parquet")
-
     tracks = xr.concat(tc_tracks, dim="record")
-    huracanpy.save(tracks, filename_out + ".nc")
+
+    return tracks, summary
 
 
 if __name__ == "__main__":

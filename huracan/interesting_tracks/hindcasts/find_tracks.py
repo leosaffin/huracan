@@ -16,11 +16,9 @@ Options:
 """
 
 import datetime
-from itertools import groupby
 
 from parse import parse
 import numpy as np
-from scipy.ndimage import uniform_filter1d
 import xarray as xr
 from tqdm import tqdm
 
@@ -28,8 +26,8 @@ import huracanpy
 from jasmin_tracks import datasets
 from twinotter.util.scripting import parse_docopt_arguments
 
-from huracan.cps import is_tropical_cyclone
 from huracan.interesting_tracks.find_tracks import tidy_track_metadata
+from huracan.interesting_tracks.generate_summary import apply_filters
 
 _YYYYMMDDHH = "{year:04d}{month:02d}{day:02d}{hour:02d}"
 _YYYYMMDDHH_model = _YYYYMMDDHH.replace("year", "model_year").replace(
@@ -55,7 +53,7 @@ def main(**kwargs):
         and ".old" not in str(f)
     ]
 
-    all_tracks = None
+    all_tracks = []
     current_track_id = 1
     for fname in tqdm(all_files):
         tracks = huracanpy.load(
@@ -77,79 +75,35 @@ def main(**kwargs):
             **{key: details[key] for key in ["year", "month", "day", "hour"]}
         )
 
-        # Filter tracks
-        condition = tracks.is_ocean & (tracks.basin == "NATL")
-        track_ids = np.unique(tracks.isel(record=np.where(condition)[0]).track_id)
-        condition = np.isin(tracks.track_id, track_ids)
-        tracks = tracks.isel(record=np.where(condition)[0])
+        # Reindex track_ids
+        track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
+        tracks["track_id_original"] = ("record", tracks.track_id.values)
+        tracks["track_id"] = ("record", new_track_ids + current_track_id)
+        tracks.track_id.attrs["cf_role"] = "trajectory_id"
 
-        track_ids = []
-        tracks_12hr = tracks.isel(record=np.where(tracks.time.dt.hour % 12 == 0)[0])
-        for track_id, track in tracks_12hr.groupby("track_id"):
-            # Only storms that are tropical cyclones at some point in their lifecycle
-            vort_smoothed = uniform_filter1d(
-                track.vorticity850hPa, size=3, mode="nearest"
-            )
+        current_track_id = tracks.track_id.values.max() + 1
 
-            condition = (
-                is_tropical_cyclone(
-                    np.abs(track.cps_b),
-                    track.cps_vtl,
-                    None,
-                    filter_size=3,
-                    b_threshold=15
-                )
-                & track.is_ocean
-                & (track.basin == "NATL")
-                & (np.gradient(vort_smoothed) > 0)
-            )
+        # Add details to subset of tracks and save
+        if details["ensemble_member"] == "CNTRL":
+            details["ensemble_member"] = "0"
 
-            category_consecutive = [
-                (k, sum(1 for i in g)) for k, g in groupby(condition.values)
-            ]
+        tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
+        tracks["model_year"] = (
+            "record",
+            [int(details["model_year"])] * len(tracks.record),
+        )
+        tracks["ensemble_member"] = (
+            "record",
+            [int(details["ensemble_member"])] * len(tracks.record),
+        )
 
-            is_tc = False
-            for category, count in category_consecutive:
-                # Discount is_tc if less than 4 timesteps
-                if category and count > 3:
-                    is_tc = True
+        all_tracks.append(tracks)
 
-            if is_tc:
-                track_ids.append(track_id)
+    all_tracks = xr.concat(all_tracks, dim="record")
+    tracks_12hr = all_tracks.isel(record=np.where(tracks.time.dt.hour % 12 == 0)[0])
+    tracks_tc, summary = apply_filters(tracks_12hr)
 
-        if len(track_ids) > 0:
-            tracks = tracks.isel(record=np.where(np.isin(tracks.track_id, track_ids))[0])
-
-            # Reindex track_ids
-            tracks = tracks.sortby("track_id")
-            track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
-            tracks["track_id_original"] = tracks.track_id
-            del tracks.track_id_original.attrs["cf_role"]
-            tracks["track_id"] = ("record", new_track_ids + current_track_id)
-            tracks.track_id.attrs["cf_role"] = "trajectory_id"
-
-            current_track_id = tracks.track_id.values.max() + 1
-
-            # Add details to subset of tracks and save
-            if details["ensemble_member"] == "CNTRL":
-                details["ensemble_member"] = "0"
-
-            tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
-            tracks["model_year"] = (
-                "record",
-                [int(details["model_year"])] * len(tracks.record),
-            )
-            tracks["ensemble_member"] = (
-                "record",
-                [int(details["ensemble_member"])] * len(tracks.record),
-            )
-
-            if all_tracks is None:
-                all_tracks = tracks
-            else:
-                all_tracks = xr.concat([all_tracks, tracks], dim="record")
-
-    if all_tracks is None:
+    if len(tracks_tc) == 0:
         print("No interesting tracks found")
 
     else:
@@ -158,7 +112,7 @@ def main(**kwargs):
             [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
             if result is not None
         ]
-        tracks = tidy_track_metadata(all_tracks, plevs)
+        tracks = tidy_track_metadata(tracks_tc, plevs)
 
         huracanpy.save(
             tracks,
