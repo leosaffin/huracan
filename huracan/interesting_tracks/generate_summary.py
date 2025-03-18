@@ -2,12 +2,41 @@
 Create a spreadsheet of tracks with CPS and intensification information
 
 Usage:
-    generate_summary.py <filename> <basin>
+    generate_summary.py <filename_in> <filename_out>
+        [--npoints=<val>]
+        [--basin=<str>]
+        [--b_threshold=<val>] [--vtl_threshold=<val>] [--vtu_threshold=<val>]
+        [--vort_threshold=<val>] [--intensification_threshold=<val>]
+        [--filter_size=<val>]
+        [--coherent] [--ocean]
     generate_summary.py (-h | --help)
 
 Arguments:
-    <filename> The name of a track dataset in jasmin_tracks
-    <basin> One of the basins supported by huracanpy
+    <filename>  The name of a track dataset in jasmin_tracks
+    --npoints=<val>
+        Number of consecutive points satisfying the selected criteria required to be
+        considered a TC [default: 4]
+    --basin=<str>
+        One of the basins supported by huracanpy. Only consider tracks that reach
+        maximum intensity in this basin, and only track points in this basin
+        [default: None]
+    --b_threshold=<val>
+        Cyclone phase space asymmetry threshold [default: 15]
+    --vtl_threshold=<val>
+        Cyclone phase space low-level warm core threshold [default: 0]
+    --vtu_threshold=<val>
+        Cyclone phase space upper-level warm core threshold [default: 0]
+    --vort_threshold=<val>
+        850hPa vorticity threshold (units 1e-5) [default: 6]
+    --intensification_threshold=<val>
+        Rate of change of (smoothed) 850hPa vorticity with time threshold [default: 0]
+    --coherent
+        Require a vortex to be identified at all pressure levels [default: True]
+    --ocean
+        Only count track points over ocean [default: True]
+    --filter_size=<val>
+        Size of uniform filter to apply to cyclone phase space parameters and vorticity
+        for intensification rate [default: 5]
 
 Options:
     -h --help
@@ -28,64 +57,94 @@ import huracanpy
 from huracan.cps import is_tropical_cyclone
 
 
-def main(filename, basin, filter_size=5):
+def main(
+    filename_in,
+    filename_out,
+    npoints=4,
+    basin=None,
+    b_threshold=None,
+    vtl_threshold=None,
+    vtu_threshold=None,
+    vort_threshold=None,
+    intensification_threshold=None,
+    coherent=False,
+    ocean=False,
+    filter_size=5,
+):
     summary = []
-    tracks = huracanpy.load(filename)
-    tracks = huracanpy.trackswhere(
-        tracks,
-        tracks.track_id,
-        lambda x: x.basin[x.vorticity.argmax()] == basin,
-    )
+    tracks = huracanpy.load(filename_in)
     tc_tracks = []
 
     for track_id, track in tqdm(tracks.groupby("track_id")):
-        is_wc_sym = False
-        is_tc = False
-        hits_europe = (huracanpy.info.basin(
-            track.lon, track.lat, convention="Sainsbury2022MWR"
-        ) == "Europe").values.any()
-        vorticity = track.relative_vorticity.sel(pressure=850)
+        if basin is not None:
+            # Skip tracks that have max intensity in a different basin if filtering by
+            # basin
+            if track.basin[track.vorticity.argmax()] != basin:
+                continue
 
         # Only storms that are tropical cyclones at some point in their lifecycle
-        tc = is_tropical_cyclone(
-            np.abs(track.cps_b),
-            track.cps_vtl,
-            None,
-            filter_size=filter_size,
-            b_threshold=15,
-        )
-        tc = (tc & (track.basin == basin) & track.is_ocean)
+        # Cyclone Phase Space
+        try:
+            tc = is_tropical_cyclone(
+                np.abs(track.cps_b),
+                track.cps_vtl,
+                track.cps_vtu,
+                filter_size=filter_size,
+                b_threshold=b_threshold,
+                vtl_threshold=vtl_threshold,
+                vtu_threshold=vtu_threshold,
+            )
+        except ValueError:
+            # If no CPS thresholds are set, start with True everywhere
+            tc = np.ones(len(track.time), dtype=bool)
 
+        # Basin
+        if basin is not None:
+            tc = tc & (track.basin == basin)
+
+        # Minimum vorticity
+        if vort_threshold is not None:
+            tc = tc & (track.relative_vorticity.sel(pressure=850) > vort_threshold)
+
+        # Intensification rate
+        if intensification_threshold is not None:
+            tc = tc & (
+                np.gradient(uniform_filter1d(
+                    track.relative_vorticity.sel(pressure=850),
+                    size=filter_size,
+                    mode="nearest",
+                )) > intensification_threshold
+            )
+
+        # Coherent
+        if coherent:
+            # Check for NaNs and mask value in TRACK (1e25)
+            tc = tc & ~(
+                np.isnan(track.relative_vorticity) |
+                (track.relative_vorticity == 1e25)
+            ).any(dim="pressure")
+
+        # Over ocean
+        if ocean:
+            track.hrcn.add_is_ocean()
+            tc = tc & track.is_ocean
+
+        # Check that applied criteria are satisfied for consective npoints
+        track["is_tc"] = tc
         category_consecutive = [
-            (k, sum(1 for i in g)) for k, g in groupby(tc.values)
+            (k, sum(1 for i in g)) for k, g in groupby(track.is_tc.values)
         ]
 
+        idx = 0
         for category, count in category_consecutive:
-            if category and count >= 4:
-                is_wc_sym = True
+            if category and count < npoints:
+                track.is_tc[idx:idx + count] = False
+            idx += count
 
-        if is_wc_sym:
-            vort_smoothed = uniform_filter1d(
-                vorticity, size=filter_size, mode="nearest"
-            )
-            result = np.gradient(vort_smoothed)
+        is_tc = track.is_tc.values.any()
 
-            tc = tc & (result > 0)
-            track["is_tc"] = tc
-
-            category_consecutive = [
-                (k, sum(1 for i in g)) for k, g in groupby(tc.values)
-            ]
-            idx = 0
-            for category, count in category_consecutive:
-                if category and count < 4:
-                    track.is_tc[idx:idx + count] = False
-                idx += count
-
-            is_tc = track.is_tc.values.any()
-
-            if is_tc:
-                tc_tracks.append(track)
+        if is_tc:
+            tc_tracks.append(track)
 
         times = pd.to_datetime(track.time)
         summary.append(pd.DataFrame([dict(
@@ -96,20 +155,14 @@ def main(filename, basin, filter_size=5):
             origin_lon=track.lon.data[0],
             end_lat=track.lat.data[-1],
             end_lon=track.lon.data[-1],
-            is_wc_sym=is_wc_sym,
             is_tc=is_tc,
-            hits_europe=hits_europe,
         )]))
 
     summary = pd.concat(summary, ignore_index=True)
-    summary.to_parquet(filename.replace(".nc", ".parquet"))
+    summary.to_parquet(filename_out + ".parquet")
 
     tracks = xr.concat(tc_tracks, dim="record")
-    huracanpy.save(tracks, filename.replace(".nc", "_TCs.nc"))
-
-    track_ids = summary[summary.hits_europe == 1.0]
-    tracks = tracks.isel(record=np.where(np.isin(tracks.track_id, track_ids))[0])
-    huracanpy.save(tracks, filename.replace(".nc", "_TCs_hits-Europe.nc"))
+    huracanpy.save(tracks, filename_out + ".nc")
 
 
 if __name__ == "__main__":
