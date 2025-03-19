@@ -47,6 +47,11 @@ def main(basin="NATL", **kwargs):
         kwargs[key] = int(kwargs[key])
 
     dataset = datasets["ECMWF_hindcasts"]
+    plevs = [
+        float(result.named["n"]) for result in
+        [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
+        if result is not None
+    ]
     all_files = list(dataset.find_files(**kwargs))
     all_files = [
         f for f in all_files
@@ -60,8 +65,8 @@ def main(basin="NATL", **kwargs):
         tracks = huracanpy.load(
             str(fname), source="TRACK", variable_names=dataset.variable_names
         )
-        tracks.hrcn.add_is_ocean()
-        tracks.hrcn.add_basin()
+        tracks = tidy_track_metadata(tracks, plevs)
+        tracks = tracks.hrcn.add_is_ocean().hrcn.add_basin()
 
         # Fix for leap years
         if "022900_" in str(fname):
@@ -72,63 +77,67 @@ def main(basin="NATL", **kwargs):
         else:
             details = dataset.file_details(str(fname))
 
-        start_time = datetime.datetime(
-            **{key: details[key] for key in ["year", "month", "day", "hour"]}
-        )
+        tracks_12hr = tracks.isel(record=np.where(tracks.time.dt.hour % 12 == 0)[0])
+        try:
+            tracks_tc, summary = apply_filters(
+                tracks_12hr,
+                npoints=3,
+                basin=basin,
+                b_threshold=15,
+                vtl_threshold=0,
+                vtu_threshold=0,
+                vort_threshold=6,
+                intensification_threshold=0,
+                coherent=True,
+                ocean=False,
+                filter_size=3,
+            )
 
-        # Reindex track_ids
-        track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
-        tracks["track_id_original"] = ("record", tracks.track_id.values)
-        tracks["track_id"] = ("record", new_track_ids + current_track_id)
-        tracks.track_id.attrs["cf_role"] = "trajectory_id"
+            # Add the "is_TC" info back to the full tracks
+            tracks = tracks.isel(record=np.where(
+                np.isin(tracks.track_id, summary[summary.is_tc == 1].track_id)
+            )[0])
+            tracks["is_tc"] = ("record", np.zeros(len(tracks.time), dtype=bool))
+            tracks.is_tc[tracks.time.dt.hour % 12 == 0] = tracks_tc.is_tc.values
 
-        current_track_id = tracks.track_id.values.max() + 1
+            # Reindex track_ids
+            track_ids, new_track_ids = np.unique(tracks.track_id, return_inverse=True)
+            tracks["track_id_original"] = ("record", tracks.track_id.values)
+            tracks["track_id"] = ("record", new_track_ids + current_track_id)
+            tracks.track_id.attrs["cf_role"] = "trajectory_id"
 
-        # Add details to subset of tracks and save
-        if details["ensemble_member"] == "CNTRL":
-            details["ensemble_member"] = "0"
+            current_track_id = tracks.track_id.values.max() + 1
 
-        tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
-        tracks["model_year"] = (
-            "record",
-            [int(details["model_year"])] * len(tracks.record),
-        )
-        tracks["ensemble_member"] = (
-            "record",
-            [int(details["ensemble_member"])] * len(tracks.record),
-        )
+            # Add details to subset of tracks and save
+            start_time = datetime.datetime(
+                **{key: details[key] for key in ["year", "month", "day", "hour"]}
+            )
+            if details["ensemble_member"] == "CNTRL":
+                details["ensemble_member"] = "0"
 
-        all_tracks.append(tracks)
+            tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
+            tracks["model_year"] = (
+                "record",
+                [int(details["model_year"])] * len(tracks.record),
+            )
+            tracks["ensemble_member"] = (
+                "record",
+                [int(details["ensemble_member"])] * len(tracks.record),
+            )
 
-    all_tracks = xr.concat(all_tracks, dim="record")
-    tracks_12hr = all_tracks.isel(record=np.where(tracks.time.dt.hour % 12 == 0)[0])
-    tracks_tc, summary = apply_filters(
-        tracks_12hr,
-        npoints=3,
-        basin=basin,
-        b_threshold=15,
-        vtl_threshold=0,
-        vtu_threshold=0,
-        vort_threshold=6,
-        intensification_threshold=0,
-        coherent=True,
-        ocean=False,
-        filter_size=3,
-    )
+            all_tracks.append(tracks)
+        except ValueError as e:
+            print(e)
+            print(f"No interesting tracks found for", details, "\n\n")
 
-    if len(tracks_tc) == 0:
+    if len(all_tracks) == 0:
         print("No interesting tracks found")
 
     else:
-        plevs = [
-            float(result.named["n"]) for result in
-            [parse("vorticity{n}hPa", var) for var in dataset.variable_names]
-            if result is not None
-        ]
-        tracks = tidy_track_metadata(tracks_tc, plevs)
+        all_tracks = xr.concat(all_tracks, dim="record")
 
         huracanpy.save(
-            tracks,
+            all_tracks,
             f"hindcast_tracks_{basin}_TC_{kwargs['model_year']}_{kwargs['month']}.nc",
         )
 
