@@ -31,9 +31,9 @@ Arguments:
     --intensification_threshold=<val>
         Rate of change of (smoothed) 850hPa vorticity with time threshold [default: 0]
     --coherent
-        Require a vortex to be identified at all pressure levels [default: True]
+        Require a vortex to be identified at all pressure levels [default: False]
     --ocean
-        Only count track points over ocean [default: True]
+        Only count track points over ocean [default: False]
     --filter_size=<val>
         Size of uniform filter to apply to cyclone phase space parameters and vorticity
         for intensification rate [default: 5]
@@ -129,10 +129,6 @@ def apply_filters(
             # If no CPS thresholds are set, start with True everywhere
             tc = np.ones(len(track.time), dtype=bool)
 
-        # Basin
-        if basin is not None:
-            tc = tc & (track.basin == basin)
-
         # Minimum vorticity
         if vort_threshold is not None:
             tc = tc & (track.relative_vorticity.sel(pressure=850) > vort_threshold)
@@ -172,7 +168,10 @@ def apply_filters(
                 track.is_tc[idx:idx + count] = False
             idx += count
 
-        is_tc = track.is_tc.values.any()
+        if basin is not None:
+            is_tc = (track.is_tc & (track.basin == basin)).any()
+        else:
+            is_tc = track.is_tc.any()
 
         if is_tc:
             tc_tracks.append(track)
