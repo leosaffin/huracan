@@ -169,9 +169,9 @@ def apply_filters(
             idx += count
 
         if basin is not None:
-            is_tc = (track.is_tc & (track.basin == basin)).any()
+            is_tc = (track.is_tc & (track.basin == basin)).values.any()
         else:
-            is_tc = track.is_tc.any()
+            is_tc = track.is_tc.values.any()
 
         if is_tc:
             tc_tracks.append(track)
