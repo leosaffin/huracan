@@ -1,3 +1,5 @@
+from itertools import groupby
+
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.stats import linregress
@@ -197,7 +199,10 @@ def is_tropical_cyclone(
     True where the CPS criteria for a tropical cyclone is achieved, False otherwise
 
     """
-    if (b is None and vtl is None and vtu is None) or (b_threshold is None and vtl_threshold is None and vtu_threshold is None):
+    if (
+            (b is None and vtl is None and vtu is None) or
+            (b_threshold is None and vtl_threshold is None and vtu_threshold is None)
+    ):
         raise ValueError("Need to pass at least one variable and threshold")
 
     if filter_size is not None:
@@ -224,3 +229,69 @@ def is_tropical_cyclone(
             is_tc = is_tc & other_condition
 
     return is_tc
+
+
+def nature(
+    b,
+    vtl,
+    vort,
+    is_tc,
+    *,
+    b_threshold: [float, None] = 10,
+    vtl_threshold: [float, None] = 0,
+    vort_threshold: [float, None] = 6,
+    min_count: [int, None] = 4,
+):
+    # First guess nature based on TC identification and quadrant of CPS
+    nature = np.zeros(len(vort), dtype="U2")
+    nature[(b > b_threshold) & (vtl <= vtl_threshold)] = "EC"
+    nature[(b > b_threshold) & (vtl > vtl_threshold)] = "WS"
+    nature[(b <= b_threshold) & (vtl > vtl_threshold)] = "TS"
+    nature[is_tc == 1] = "TC"
+    nature[vort < vort_threshold] = "Vo"
+    nature[nature == ""] = "ET"
+
+    # Any Warm core/symmetric periods adjacent to TC are also TC
+    nature_consecutive = [(k, sum(1 for _ in g)) for k, g in groupby(nature)]
+    idx = 0
+    for m, (nat, count) in enumerate(nature_consecutive):
+        if nat == "TS":
+            # Allow for <1 day excursions between TC-TS
+            idx_start = max(0, idx - min_count)
+            idx_end = min(len(nature), idx + count + min_count)
+            if (nature[idx_start:idx_end] == "TC").any():
+                nature[idx:idx + count] = "TC"
+
+            else:
+                nature[idx:idx + count] = "WS"
+
+        idx += count
+
+    # Smooth out any shorter than 1 day excursions
+    nature_consecutive = [(k, sum(1 for _ in g)) for k, g in groupby(nature)]
+    idx = nature_consecutive[0][1]
+    for m in range(1, len(nature_consecutive) - 1):
+        nat, count = nature_consecutive[m]
+        if count < min_count:
+            if nature_consecutive[m - 1][0] == nature_consecutive[m + 1][0]:
+                new_nat = nature_consecutive[m - 1][0]
+                nature[idx:idx + count] = new_nat
+                nature_consecutive[m] = (new_nat, count)
+
+        idx += count
+
+    # Reclassify TC->WS->EC as TC->ET->EC
+    nature_consecutive = [(k, sum(1 for _ in g)) for k, g in groupby(nature)]
+    idx = nature_consecutive[0][1]
+    for m in range(1, len(nature_consecutive) - 1):
+        nat, count = nature_consecutive[m]
+        if nat == "WS":
+            if (
+                    nature_consecutive[m - 1][0] == "TC" and
+                    nature_consecutive[m + 1][0] == "EC"
+            ):
+                nature[idx:idx + count] = "ET"
+
+        idx += count
+
+    return nature
