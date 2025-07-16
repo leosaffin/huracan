@@ -3,10 +3,11 @@
 Subset by year and month to be able to parallelise
 
 Usage:
-    add_cps.py [--year=<year>] [--month=<month>]
+    add_cps.py filename [--year=<year>] [--month=<month>]
     add_cps.py  (-h | --help)
 
 Arguments:
+    filename=filename
     --year=<year>
     --month=<month>
 
@@ -16,7 +17,6 @@ Options:
 """
 
 from tqdm import tqdm
-import iris
 from iris.cube import Cube
 from iris.coords import DimCoord
 import numpy as np
@@ -32,24 +32,21 @@ import huracanpy
 from huracan import cps
 
 
-def main(year=None, month=None):
+def main(filename, year=None, month=None):
     year = int(year)
     month = int(month)
 
     # Initial sift of tracks with find_tracks.py
-    tracks = huracanpy.load(f"tracks/ERA5_tracks_NATL_990hPa.nc")
+    tracks = huracanpy.load(filename)
 
     # Subset year and month by first track point
-    track_origins = tracks.groupby("track_id").first()
-    track_origins = track_origins.isel(
-        track_id=np.where(
-            (track_origins.time.dt.year == year)
-            & (track_origins.time.dt.month == month)
-        )[0]
-    )
-    tracks = tracks.isel(
-        record=np.where(np.isin(tracks.track_id, track_origins.track_id))[0]
-    )
+    genesis = tracks.hrcn.get_gen_vals()
+    track_ids = genesis.track_id[
+        (genesis.time.dt.year == year) &
+        (genesis.time.dt.month == month)
+    ]
+    tracks = tracks.hrcn.sel_id(track_ids)
+    tracks = tracks.hrcn.add_azimuth(centering="adaptive")
 
     # Loop over time and re-sort at the end to avoid having to reload ERA5 data
     all_points = []
@@ -57,23 +54,19 @@ def main(year=None, month=None):
     for time, points in tqdm(time_groups):
         time = pd.to_datetime(time)
         cubes = jasmin_era5.load(time)
-        cubes = cubes.extract(
-            iris.Constraint(longitude=lambda x: x < 60 or x > 240) &
-            iris.Constraint(latitude=lambda x: x > 0)
-        )
-        z_t = get_geopotential_height(cubes)
+        z_t = get_geopotential_height(cubes, levels=range(90000, 60000 - 1, -5000))
+        del cubes
 
-        b, vtl, vtu = [], [], []
-        for lon, lat in zip(points.lon.values, points.lat.values):
-            if (lon < 60 or lon > 240) and lat > 0:
-                b.append(cps.cps_b(z_t, 900, 600, lon, lat, radius=500))
-                vtl.append(cps.cps_vt(z_t, 900, 600, lon, lat, radius=500))
-                vtu.append(cps.cps_vt(z_t, 600, 300, lon, lat, radius=500))
-            else:
-                b.append(np.nan)
-                vtl.append(np.nan)
-                vtu.append(np.nan)
+        bmax, b, vtl, vtu = [], [], [], []
+        for lon, lat, angle in zip(
+            points.lon.values, points.lat.values, points.azimuth.values
+        ):
+            bmax.append(cps.cps_b(z_t, 900, 600, lon, lat, radius=500))
+            b.append(cps.cps_b(z_t, 900, 600, lon, lat, radius=500), angle=angle)
+            vtl.append(cps.cps_vt(z_t, 900, 600, lon, lat, radius=500))
+            vtu.append(cps.cps_vt(z_t, 600, 300, lon, lat, radius=500))
 
+        points["cps_bmax"] = ("record", bmax)
         points["cps_b"] = ("record", b)
         points["cps_vtl"] = ("record", vtl)
         points["cps_vtu"] = ("record", vtu)
@@ -82,7 +75,7 @@ def main(year=None, month=None):
 
     result = xr.concat(all_points, dim="record").sortby("track_id")
 
-    huracanpy.save(result, f"tracks/ERA5_tracks_CPS_NATL_990hPa_{year}_{month:02d}.nc")
+    huracanpy.save(result, filename.replace(".nc", f"{year}_{month:02d}.nc"))
 
 
 def get_geopotential_height(cubes, levels=(90000, 60000, 30000)):

@@ -19,7 +19,13 @@ geodesic = Geodesic()
 
 
 def cps_b(
-    z: Cube, p1: float, p2: float, lon: float, lat: float, radius: float = 500
+    z: Cube,
+    p1: float,
+    p2: float,
+    lon: float,
+    lat: float,
+    radius: float = 500,
+    angle: [ArrayLike, float] = np.arange(0, 180, 10)
 ) -> float:
     """Cyclone Phase Space Thermal Asymmetry (B)
 
@@ -33,6 +39,7 @@ def cps_b(
         Location of the cyclone centre (in degrees)
     radius
         The radius (in km) to average around the cyclone
+    angle
 
     Returns
     -------
@@ -40,8 +47,7 @@ def cps_b(
     """
     z = z.extract(iris.Constraint(air_pressure=[p2, p1]))
 
-    bearing = np.arange(0, 180, 10)
-    z_left, z_right = split_cyclone_data(np.array([lon, lat]), bearing, z)
+    z_left, z_right = split_cyclone_data(np.array([lon, lat]), angle, z)
 
     # dz_left[bearing, pressure_level, latitude, longitude]
     dz_left = z_left[:, 1, :, :] - z_left[:, 0, :, :]
@@ -119,7 +125,7 @@ def split_cyclone_data(
     NaNs).
     """
     # Make sure bearing varies between -180 and 180
-    bearings = wrap_lons(bearings, base=-180, period=360)
+    bearings = wrap_lons(np.asarray(bearings), base=-180, period=360)
 
     # A list of every lat, lon grid point
     xpoints, ypoints = get_xy_grids(field)
