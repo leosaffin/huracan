@@ -50,8 +50,12 @@ def cps_b(
     z_left, z_right = split_cyclone_data(np.array([lon, lat]), angle, z)
 
     # dz_left[bearing, pressure_level, latitude, longitude]
-    dz_left = z_left[:, 1, :, :] - z_left[:, 0, :, :]
-    dz_right = z_right[:, 1, :, :] - z_right[:, 0, :, :]
+    if len(angle) == 1:
+        dz_left = z_left[1, :, :] - z_left[0, :, :]
+        dz_right = z_right[1, :, :] - z_right[0, :, :]
+    else:
+        dz_left = z_left[:, 1, :, :] - z_left[:, 0, :, :]
+        dz_right = z_right[:, 1, :, :] - z_right[:, 0, :, :]
 
     weights_ = area_weights_within_distance(dz_left, lon, lat, radius)
     weights = weights_ * ~np.isnan(dz_left.data)
