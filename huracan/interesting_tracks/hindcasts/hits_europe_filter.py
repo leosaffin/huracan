@@ -23,7 +23,10 @@ import huracanpy
 
 
 def main(filename_in, filename_out=None):
+    if filename_out is None:
+        filename_out = filename_in.replace(".nc", "_hits-europe.nc")
     print(filename_in, filename_out)
+
     tracks = huracanpy.load(filename_in)
 
     iseurope = huracanpy.info.basin(
@@ -31,14 +34,9 @@ def main(filename_in, filename_out=None):
     ) == "Europe"
 
     subset = tracks.isel(record=np.where(iseurope)[0])
-    tracks_ = tracks.isel(record=np.where(
-        np.isin(tracks.track_id, np.unique(subset.track_id))
-    )[0])
+    tracks = tracks.hrcn.sel_id(np.unique(subset.track_id))
 
-    if filename_out is None:
-        filename_out = filename_in.replace(".nc", "_hits-europe.nc")
-
-    huracanpy.save(tracks_, filename_out)
+    huracanpy.save(tracks, filename_out)
 
 
 if __name__ == '__main__':
