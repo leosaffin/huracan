@@ -5,9 +5,9 @@ Usage:
     find_tracks.py  (-h | --help)
 
 Arguments:
-    filename_in
+    <filename_in>
         The tracks file to load
-    filename_out
+    <filename_out>
         The filename to save the filtered tracks.
 
 
