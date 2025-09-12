@@ -49,7 +49,7 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
 from tqdm import tqdm
-from twinotter.util.scripting import parse_docopt_arguments
+from parse_docopt import parse_docopt
 import xarray as xr
 
 import huracanpy
@@ -125,7 +125,7 @@ def apply_filters(
                 vtl_threshold=vtl_threshold,
                 vtu_threshold=vtu_threshold,
             )
-        except ValueError:
+        except (ValueError, AttributeError):
             # If no CPS thresholds are set, start with True everywhere
             tc = np.ones(len(track.time), dtype=bool)
 
@@ -195,4 +195,4 @@ def apply_filters(
 
 
 if __name__ == "__main__":
-    parse_docopt_arguments(main, __doc__)
+    main(**parse_docopt(__doc__))
