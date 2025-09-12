@@ -89,7 +89,7 @@ def tidy_track_metadata(tracks, plevs):
     vorticity_lon = np.zeros_like(vorticity)
     vorticity_lat = np.zeros_like(vorticity)
     for n, plev in enumerate(tracks.pressure.values):
-        name = f"vorticity{int(plev)}hPa"
+        name = f"vorticity{int(plev)}hpa"
         vorticity[:, n] = tracks[name].values
         vorticity_lon[:, n] = tracks[name + "_lon"].values
         vorticity_lat[:, n] = tracks[name + "_lat"].values
