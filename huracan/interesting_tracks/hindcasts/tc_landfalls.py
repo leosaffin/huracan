@@ -1,4 +1,6 @@
 """
+Check for TC landfalls in tracks that are initialised as TCs
+Do they remain warm core and symmetric until they hit Europe?
 
 Usage:
     tc_landfalls.py <filename_in> [<filename_out>]
@@ -37,14 +39,18 @@ def main(filename_in, filename_out=None):
     for track_id, track in tqdm(tracks.groupby("track_id")):
         # Tracks are initialised as TC, so just need to subset those that retain a
         # warm core, symmetric structure all the way to landfall
-        track_ = track.isel(record=np.where(track.time.dt.hour % 12 == 0)[0])
+        idx_landfall = np.where(track.iseurope == "Europe")[0][0]
+        time_landfall = track.time.values[idx_landfall]
 
+        track_ = track.isel(record=np.where(track.time.dt.hour % 12 == 0)[0])
         b = uniform_filter1d(np.abs(track_.cps_b), size=3, mode="nearest")
         vtl = uniform_filter1d(track_.cps_vtl, size=3, mode="nearest")
-        idx_landfall = np.where(track_.basin == "Europe")[0][0]
 
-        if ((b[0:idx_landfall] < 15) & (vtl[0:idx_landfall] > 0)).all():
-            tc_landfalls.append(track_)
+        idx_not_tc = np.where((b > 15) | (vtl < 0))[0][0]
+        time_not_tc = track_.time.values[idx_not_tc]
+
+        if time_not_tc >= time_landfall:
+            tc_landfalls.append(track)
 
     if len(tc_landfalls) > 0:
         tc_landfalls = xr.concat(tc_landfalls, dim="record")
