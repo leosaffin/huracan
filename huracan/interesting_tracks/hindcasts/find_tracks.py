@@ -27,18 +27,9 @@ import huracanpy
 from jasmin_tracks import datasets
 from twinotter.util.scripting import parse_docopt_arguments
 
-from huracan.interesting_tracks.find_tracks import tidy_track_metadata
-from huracan.interesting_tracks.generate_summary import apply_filters
-
-_YYYYMMDDHH = "{year:04d}{month:02d}{day:02d}{hour:02d}"
-_YYYYMMDDHH_model = _YYYYMMDDHH.replace("year", "model_year").replace(
-    "day", "model_day"
-)
-
-leap_year_extra_path = (
-    f"{_YYYYMMDDHH_model}/{_YYYYMMDDHH}/"
-    f"HIND_VOR_VERTAVG_{_YYYYMMDDHH_model}_{_YYYYMMDDHH}" + "_{ensemble_member}/"
-)
+from . import leap_year_extra_path
+from ..find_tracks import tidy_track_metadata
+from ..generate_summary import apply_filters
 
 
 def main(basin="NATL", **kwargs):

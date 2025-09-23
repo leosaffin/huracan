@@ -13,7 +13,6 @@ Usage:
     find_counterfactuals.py
         <unseen_fname>
         <ibtracs_fname>
-        [--basin=<str>]
         [--model_year=<model_year>]
         [--month=<month>]
     find_counterfactuals.py  (-h | --help)
@@ -21,18 +20,6 @@ Usage:
 Arguments:
     --model_year=<model_year>
     --month=<month>
-
-Options:
-    -h --help        Show help
-
-Usage:
-    find_counterfactuals.py
-    find_counterfactuals.py  (-h | --help)
-
-Arguments:
-    <initialised_fname>
-    <unseen_fname>
-    <eibtracs_fname>
 
 Options:
     -h --help        Show help
@@ -49,7 +36,7 @@ import xarray as xr
 
 from jasmin_tracks import datasets, combine
 
-from .find_tracks import leap_year_extra_path
+from . import leap_year_extra_path
 
 
 def main(unseen_fname, ibtracs_fname, **kwargs):
@@ -153,19 +140,19 @@ def filter_tcs(tracks, unseen, ibtracs):
     track_ids = unseen_initial.track_id[
         unseen_initial.forecast_start == unseen_initial.time
     ]
-    unseen_tracks = unseen.hrcn.sel_id(track_ids)
+    unseen = unseen.hrcn.sel_id(track_ids)
 
     # Filter out tracks already selected
     tracks_selected = huracanpy.concat_tracks([tracks_tc, tracks_ptc], keep_track_id=False)
     matches = huracanpy.assess.match(
-        [unseen_tracks, tracks_selected], ["unseen", ""], max_dist=0
+        [unseen, tracks_selected], ["unseen", "selected"], max_dist=0
     )
 
-    track_ids = np.unique(unseen_tracks.track_id)
+    track_ids = np.unique(unseen.track_id)
     track_ids = track_ids[
-        ~np.isin(track_ids, matches.id_ibtracs)
+        ~np.isin(track_ids, matches.id_unseen)
     ]
-    tracks_vortex = unseen_tracks.hrcn.sel_id(track_ids)
+    tracks_vortex = unseen.hrcn.sel_id(track_ids)
 
     return tracks_tc, tracks_ptc, tracks_vortex
 
