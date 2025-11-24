@@ -25,7 +25,7 @@ def main():
     start_points = ibtracs.hrcn.get_gen_vals()
     end_points = ibtracs.hrcn.get_apex_vals("time", stat="max")
     track_ids = start_points.track_id[
-        (start_points.time.dt.year >= 1940) & (end_points.time.dt.year <= 2022)
+        (start_points.time.dt.year >= 1940) & (end_points.time.dt.year <= 2024)
     ]
     ibtracs = ibtracs.hrcn.sel_id(track_ids)
 
@@ -33,12 +33,11 @@ def main():
     ibtracs = ibtracs.isel(record=np.where(ibtracs.time.dt.hour % 6 == 0)[0])
 
     # Only include storms that are labelled as tropical storm for at least one point
-    # and last for four days
     ibtracs = ibtracs.hrcn.trackswhere(
         lambda track: (track.nature == "TS").any() and track.time.size >= 4
     )
 
-    ibtracs.hrcn.save("ibtracs_TCs_1940-2022.nc")
+    ibtracs.hrcn.save("IBTrACS_6h_1940-2024_Tropical-Storms.nc")
 
 
 if __name__ == "__main__":
