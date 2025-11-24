@@ -106,6 +106,9 @@ def apply_filters(
     summary = []
     tc_tracks = []
 
+    if basin is not None and "basin" not in tracks:
+        tracks = tracks.hrcn.add_basin()
+
     for track_id, track in tqdm(tracks.groupby("track_id")):
         if basin is not None:
             # Skip tracks that have max intensity in a different basin if filtering by
