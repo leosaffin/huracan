@@ -11,13 +11,13 @@ three categories
 
 Usage:
     find_counterfactuals.py
-        <unseen_fname>
         <ibtracs_fname>
         [--model_year=<model_year>]
         [--month=<month>]
     find_counterfactuals.py  (-h | --help)
 
 Arguments:
+    <ibtracs_fname>
     --model_year=<model_year>
     --month=<month>
 
@@ -29,6 +29,7 @@ import datetime
 
 import huracanpy
 import numpy as np
+import pandas as pd
 from parse import parse
 from parse_docopt import parse_docopt
 from tqdm import tqdm
@@ -39,7 +40,7 @@ from jasmin_tracks import datasets, combine
 from . import leap_year_extra_path
 
 
-def main(unseen_fname, ibtracs_fname, **kwargs):
+def main(ibtracs_fname, **kwargs):
     dataset = datasets["ECMWF_hindcasts"]
     all_files = list(dataset.find_files(**kwargs))
     all_files = [
@@ -48,14 +49,11 @@ def main(unseen_fname, ibtracs_fname, **kwargs):
         and ".old" not in str(f)
     ]
 
-    all_tracks = []
-    for fname in tqdm(all_files):
-        tracks = huracanpy.load(
-            fname, source="TRACK", variable_names=dataset.variable_names
-        )
-        tracks = combine.gather_vorticity_profile(tracks)
-        tracks = tracks.hrcn.add_is_ocean().hrcn.add_basin()
+    ibtracs = huracanpy.load(ibtracs_fname)
 
+    all_tracks_tc = []
+    all_tracks_ptc = []
+    for fname in tqdm(all_files):
         # Fix for leap years
         if "022900_" in str(fname):
             details = parse(
@@ -65,50 +63,61 @@ def main(unseen_fname, ibtracs_fname, **kwargs):
         else:
             details = dataset.file_details(str(fname))
 
-        # Only tracks that are initialised
         start_time = datetime.datetime(
             **{key: details[key] for key in ["year", "month", "day", "hour"]}
         )
-        genesis = tracks.hrcn.get_gen_vals()
-        tracks = tracks.hrcn.sel_id(genesis.track_id[genesis.time == start_time])
 
-        # Add details to subset of tracks and save
-        if len(tracks.record) > 0:
-            if details["ensemble_member"] == "CNTRL":
-                details["ensemble_member"] = "0"
-
-            tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
-            tracks["model_year"] = (
-                "record",
-                [int(details["model_year"])] * len(tracks.record),
+        ibtracs_ = ibtracs.track_id[pd.to_datetime(ibtracs.time) == start_time]
+        if len(ibtracs_.record) > 0:
+            ibtracs_ = ibtracs.hrcn.sel_id(ibtracs_)
+            tracks = huracanpy.load(
+                fname, source="TRACK", variable_names=dataset.variable_names
             )
-            tracks["ensemble_member"] = (
-                "record",
-                [int(details["ensemble_member"])] * len(tracks.record),
-            )
+            tracks = combine.gather_vorticity_profile(tracks)
+            tracks = tracks.hrcn.add_is_ocean().hrcn.add_basin()
 
-            all_tracks.append(tracks)
+            # Only tracks that are initialised
+            genesis = tracks.hrcn.get_gen_vals()
+            tracks = tracks.hrcn.sel_id(genesis.track_id[genesis.time == start_time])
+
+            # Add details to subset of tracks and save
+            if len(tracks.record) > 0:
+                if details["ensemble_member"] == "CNTRL":
+                    details["ensemble_member"] = "0"
+
+                tracks["forecast_start"] = ("record", [start_time] * len(tracks.record))
+                tracks["model_year"] = (
+                    "record",
+                    [int(details["model_year"])] * len(tracks.record),
+                )
+                tracks["ensemble_member"] = (
+                    "record",
+                    [int(details["ensemble_member"])] * len(tracks.record),
+                )
+
+                tracks_tc, tracks_ptc = filter_tcs(tracks, ibtracs_)
+
+                if len(tracks_tc.time) > 0:
+                    all_tracks_tc.append(tracks_tc)
+                if len(tracks_ptc.time) > 0:
+                    all_tracks_ptc.append(tracks_ptc)
+            else:
+                print(f"Found zero initialised tracks in {fname}")
         else:
-            print(f"Found zero initialised tracks in {fname}")
-
-    all_tracks = huracanpy.concat_tracks(all_tracks, keep_track_id=False)
-
-    unseen = huracanpy.load(unseen_fname)
-    ibtracs = huracanpy(ibtracs_fname)
-
-    tracks_tc, tracks_ptc, tracks_vortex = filter_tcs(all_tracks, unseen, ibtracs)
+            print(f"No active tracks for {fname}")
 
     for tracks, suffix in [
-        (tracks_tc, "TC"), (tracks_ptc, "PTC"), (tracks_vortex, "vortex")
+        (all_tracks_tc, "TC"), (all_tracks_ptc, "PTC")
     ]:
-        if len(tracks.time) > 0:
+        if len(tracks) > 0:
+            tracks = huracanpy.concat_tracks(tracks, keep_track_id=False)
             huracanpy.save(
                 tracks,
-                f"ECMWF-HINDCASTS_{kwargs['model_year']}_initialised_{suffix}.nc"
+                f"ECMWF-HINDCASTS_{kwargs['model_year']}-{kwargs['month']}_initialised_{suffix}.nc"
             )
 
 
-def filter_tcs(tracks, unseen, ibtracs):
+def filter_tcs(tracks, ibtracs):
     # Make sure track_id is not a coordinate or the matching fails
     initial_points = tracks.hrcn.get_gen_vals().rename(track_id="record")
     initial_points = initial_points.assign(
@@ -126,35 +135,14 @@ def filter_tcs(tracks, unseen, ibtracs):
         idx = np.where(track.nature == "TS")[0][-1]
         if idx < len(track.time) - 1:
             ibtracs_ptc.append(track.isel(record=slice(idx + 1, None)))
-    ibtracs_ptc = xr.concat(ibtracs_ptc, dim="record")
 
-    tracks_ptc = match_initialisation(ibtracs_ptc, initial_points, tracks)
+    if len(ibtracs_ptc) > 0:
+        ibtracs_ptc = xr.concat(ibtracs_ptc, dim="record")
+        tracks_ptc = match_initialisation(ibtracs_ptc, initial_points, tracks)
+    else:
+        tracks_ptc = ibtracs.isel(record=slice(0, 0))
 
-    # 3. Alternative TC
-    # Grab these from the initialised "UNSEEN" tracks. They have been filtered for WCSI,
-    # but not initialised vs actual unseen.
-    unseen_initial = unseen.hrcn.get_gen_vals().rename(track_id="record")
-    unseen_initial = unseen_initial.assign(
-        track_id=("record", unseen_initial.record.values)
-    )
-    track_ids = unseen_initial.track_id[
-        unseen_initial.forecast_start == unseen_initial.time
-    ]
-    unseen = unseen.hrcn.sel_id(track_ids)
-
-    # Filter out tracks already selected
-    tracks_selected = huracanpy.concat_tracks([tracks_tc, tracks_ptc], keep_track_id=False)
-    matches = huracanpy.assess.match(
-        [unseen, tracks_selected], ["unseen", "selected"], max_dist=0
-    )
-
-    track_ids = np.unique(unseen.track_id)
-    track_ids = track_ids[
-        ~np.isin(track_ids, matches.id_unseen)
-    ]
-    tracks_vortex = unseen.hrcn.sel_id(track_ids)
-
-    return tracks_tc, tracks_ptc, tracks_vortex
+    return tracks_tc, tracks_ptc
 
 
 def match_initialisation(ibtracs, initial_points, hindcast_tracks):
@@ -175,5 +163,8 @@ def match_initialisation(ibtracs, initial_points, hindcast_tracks):
 
 
 if __name__ == "__main__":
-    main(**parse_docopt(__doc__))
+    kwargs = parse_docopt(__doc__)
+    print(kwargs)
+    main(**kwargs)
+
 
