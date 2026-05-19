@@ -53,6 +53,7 @@ def main(ibtracs_fname, **kwargs):
 
     all_tracks_tc = []
     all_tracks_ptc = []
+    all_tracks_pre_tc = []
     for fname in tqdm(all_files):
         # Fix for leap years
         if "022900_" in str(fname):
@@ -73,12 +74,14 @@ def main(ibtracs_fname, **kwargs):
             tracks = huracanpy.load(
                 fname, source="TRACK", variable_names=dataset.variable_names
             )
-            tracks = combine.gather_vorticity_profile(tracks)
-            tracks = tracks.hrcn.add_is_ocean().hrcn.add_basin()
 
             # Only tracks that are initialised
             genesis = tracks.hrcn.get_gen_vals()
             tracks = tracks.hrcn.sel_id(genesis.track_id[genesis.time == start_time])
+
+            # Add extra info
+            tracks = combine.gather_vorticity_profile(tracks)
+            tracks = tracks.hrcn.add_is_ocean().hrcn.add_basin()
 
             # Add details to subset of tracks and save
             if len(tracks.record) > 0:
@@ -95,19 +98,21 @@ def main(ibtracs_fname, **kwargs):
                     [int(details["ensemble_member"])] * len(tracks.record),
                 )
 
-                tracks_tc, tracks_ptc = filter_tcs(tracks, ibtracs_)
+                tracks_tc, tracks_ptc, tracks_pre_tc = filter_tcs(tracks, ibtracs_)
 
                 if len(tracks_tc.time) > 0:
                     all_tracks_tc.append(tracks_tc)
                 if len(tracks_ptc.time) > 0:
                     all_tracks_ptc.append(tracks_ptc)
+                if len(tracks_pre_tc):
+                    all_tracks_pre_tc.append(tracks_pre_tc)
             else:
                 print(f"Found zero initialised tracks in {fname}")
         else:
             print(f"No active tracks for {fname}")
 
     for tracks, suffix in [
-        (all_tracks_tc, "TC"), (all_tracks_ptc, "PTC")
+        (all_tracks_tc, "TC"), (all_tracks_ptc, "PTC"), (all_tracks_pre_tc, "vortex")
     ]:
         if len(tracks) > 0:
             tracks = huracanpy.concat_tracks(tracks, keep_track_id=False)
@@ -128,13 +133,19 @@ def filter_tcs(tracks, ibtracs):
     ibtracs_tc = ibtracs.isel(record=np.where(ibtracs.nature == "TS")[0])
     tracks_tc = match_initialisation(ibtracs_tc, initial_points, tracks)
 
-    # 2. Initialised post TC
+    # 2. Initialised post TC or pre TC
     # Get IBTrACS after the last tropical storm tag
+    # and befor the first tropical storm tag
     ibtracs_ptc = []
+    ibtracs_pre_tc = []
     for track_id, track in ibtracs.groupby("track_id"):
         idx = np.where(track.nature == "TS")[0][-1]
+        idx_ptc = idx[-1] + 1
+        idx_pre_tc = idx[0]
         if idx < len(track.time) - 1:
-            ibtracs_ptc.append(track.isel(record=slice(idx + 1, None)))
+            ibtracs_ptc.append(track.isel(record=slice(idx_ptc, None)))
+        if idx_pre_tc > 0:
+            ibtracs_pre_tc.append(track.isel(record=slice(0, idx_pre_tc)))
 
     if len(ibtracs_ptc) > 0:
         ibtracs_ptc = xr.concat(ibtracs_ptc, dim="record")
@@ -142,7 +153,13 @@ def filter_tcs(tracks, ibtracs):
     else:
         tracks_ptc = ibtracs.isel(record=slice(0, 0))
 
-    return tracks_tc, tracks_ptc
+    if len(ibtracs_pre_tc) > 0:
+        ibtracs_pre_tc = xr.concat(ibtracs_pre_tc, dim="record")
+        tracks_pre_tc = match_initialisation(ibtracs_pre_tc, initial_points, tracks)
+    else:
+        tracks_pre_tc = ibtracs.isel(record=slice(0, 0))
+
+    return tracks_tc, tracks_ptc, tracks_pre_tc
 
 
 def match_initialisation(ibtracs, initial_points, hindcast_tracks):
